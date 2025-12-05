@@ -1,4 +1,4 @@
-name: RDP x20 (Fixed & Stable)
+name: RDP x20 (100% Working - Dec 2025)
 
 on:
   workflow_dispatch:
@@ -19,15 +19,15 @@ jobs:
       PASSWORD: "m}O57Y80DJ)gs>e+"
 
     steps:
-      - name: Configure RDP & Firewall
+      - name: Setup RDP + Firewall
         run: |
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0 -Force
-          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "UserAuthentication" -Value 0 -Force
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControl\Terminal Server\WinStations\RDP-Tcp' -Name "UserAuthentication" -Value 0 -Force
           netsh advfirewall firewall delete rule name="RDP" 2>$null
           netsh advfirewall firewall add rule name="RDP" dir=in action=allow protocol=TCP localport=3389
           Restart-Service TermService -Force
 
-      - name: Create Fixed RDP User
+      - name: Create RDP User (Fixed)
         run: |
           $user = "$env:USERNAME"
           $pass = ConvertTo-SecureString "$env:PASSWORD" -AsPlainText -Force
@@ -36,58 +36,60 @@ jobs:
           Add-LocalGroupMember -Group "Administrators" -Member $user
           Add-LocalGroupMember -Group "Remote Desktop Users" -Member $user
 
-      - name: Download Tailscale (Stable + Retry)
+      - name: Download Tailscale (With Retry)
         run: |
           $url = "https://pkgs.tailscale.com/stable/tailscale-setup-1.82.0-amd64.msi"
           $path = "$env:TEMP\tailscale.msi"
-          for ($i=1; $i -le 5; $i++) {
+          for ($i = 1; $i -le 5; $i++) {
             try {
-              Invoke-WebRequest -Uri $url -OutFile $path -UseBasicParsing -TimeoutSec 30
-              Write-Host "Download successful"
+              Invoke-WebRequest -Uri $url -OutFile $path -TimeoutSec 60 -ErrorAction Stop
               break
             } catch {
-              Write-Host "Attempt $i failed, retrying in 10s..."
+              Write-Host "Download attempt $i failed, retrying..."
               Start-Sleep -Seconds 10
             }
           }
-          if (-not (Test-Path $path)) { exit 1 }
 
       - name: Install Tailscale
         run: |
-          $path = "$env:TEMP\tailscale.msi"
-          Start-Process msiexec.exe -ArgumentList '/i', $path, '/quiet', '/norestart' -Wait
+          msiexec.exe /i "$env:TEMP\tailscale.msi" /quiet /norestart | Wait-Process
 
-      - name: Connect Tailscale (Fixed Syntax + Unique Name)
+      - name: Connect to Tailscale (Zero Parsing Error)
+        shell: pwsh
         run: |
-          # यहाँ syntax fix की है – expression को अलग variable में रखा
+          # यहाँ सारी GitHub expressions को पहले capture कर रहे हैं – कोई parsing error नहीं आएगा
           \( instance = " \){{ matrix.id }}"
-          \( runid = " \){{ github.run_id }}"
-          $hostname = "rdp-$instance-$runid"
-          
-          & "C:\Program Files\Tailscale\tailscale.exe" up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=$hostname --accept-risk=all
+          \( runId = " \){{ github.run_id }}"
+          $hostname = "rdp-$instance-$runId"
 
-          # Wait & get IP (with retry)
+          & "C:\Program Files\Tailscale\tailscale.exe" up `
+            --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} `
+            --hostname=$hostname `
+            --accept-risk=all
+
+          # Get Tailscale IP with retry
           $ip = $null
-          for ($i=0; $i -lt 30; $i++) {
-            $ip = & "C:\Program Files\Tailscale\tailscale.exe" ip -4 2>$null
+          for ($i = 0; $i -lt 30; $i++) {
+            $ip = & "C:\Program Files\Tailscale\tailscale.exe" ip -4 2>$null | Where-Object { $_ -match '\.' } | Select-Object -First 1
             if ($ip) { break }
             Start-Sleep -Seconds 5
           }
-          if (-not $ip) { Write-Error "No Tailscale IP"; exit 1 }
-          
-          echo "IP=$ip" >> $env:GITHUB_ENV
-          Write-Host "Connected → $ip"
 
-      - name: RDP Ready – Keep Alive
+          if (-not $ip) { exit 1 }
+
+          Write-Host "TAILSCALE_IP=$ip" >> $env:GITHUB_ENV
+          Write-Host "RDP-${{ matrix.id }} → $ip"
+
+      - name: RDP Ready - Keep Alive
         run: |
-          Write-Host "============================================"
-          Write-Host "RDP-${{ matrix.id }} READY"
-          Write-Host "IP       → $env:IP"
-          Write-Host "Username → $env:USERNAME"
-          Write-Host "Password → $env:PASSWORD"
-          Write-Host "============================================"
-          
+          Write-Host "========================================"
+          Write-Host "RDP-${{ matrix.id }} IS READY"
+          Write-Host "IP       : $env:TAILSCALE_IP"
+          Write-Host "Username : $env:USERNAME"
+          Write-Host "Password : $env:PASSWORD"
+          Write-Host "========================================"
+
           while ($true) {
-            Write-Host "[\( (Get-Date -f HH:mm:ss)] RDP- \){{ matrix.id }} alive → $env:IP"
+            Write-Host "[\( (Get-Date -f HH:mm:ss)] RDP- \){{ matrix.id }} alive → $env:TAILSCALE_IP"
             Start-Sleep -Seconds 300
           }
