@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
 
 jobs:
-  rdp-setup:
+  rdp:
     runs-on: windows-latest
     strategy:
       matrix:
@@ -13,7 +13,6 @@ jobs:
     timeout-minutes: 3600
 
     steps:
-
       - name: Enable RDP
         run: |
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' `
@@ -27,11 +26,11 @@ jobs:
 
           Restart-Service -Name TermService -Force
 
-      - name: Create RDP User (Same Username & Password)
+      - name: Create User (Same Username & Password)
         run: |
           $password = "m}O57Y80DJ)gs>e+"
           $secure = ConvertTo-SecureString $password -AsPlainText -Force
-          
+
           if (-not (Get-LocalUser -Name "RDP" -ErrorAction SilentlyContinue)) {
             New-LocalUser -Name "RDP" -Password $secure -AccountNeverExpires
             Add-LocalGroupMember -Group "Administrators" -Member "RDP"
@@ -42,37 +41,38 @@ jobs:
         run: |
           $tsUrl = "https://pkgs.tailscale.com/stable/tailscale-setup-1.82.0-amd64.msi"
           $installer = "$env:TEMP\ts.msi"
-
           Invoke-WebRequest $tsUrl -OutFile $installer
           Start-Process msiexec.exe -ArgumentList "/i `"$installer`" /quiet /norestart" -Wait
 
-      - name: Connect Tailscale
+      - name: Auto Login to Tailscale (No Browser)
         run: |
           & "C:\Program Files\Tailscale\tailscale.exe" up `
             --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} `
-            --hostname=gh-rdp-${{ matrix.id }}
+            --hostname=gh-rdp-${{ matrix.id }} `
+            --accept-routes `
+            --accept-dns
 
+          # Wait for IP
           $tsIP = ""
           while ($tsIP -eq "") {
             $tsIP = (& "C:\Program Files\Tailscale\tailscale.exe" ip -4)
             Start-Sleep 3
           }
-
           echo "TS_IP=$tsIP" >> $env:GITHUB_ENV
 
-      - name: Show RDP Info
+      - name: RDP Connection Info
         run: |
-          Write-Host "==============================="
-          Write-Host "      RDP INSTANCE ${{ matrix.id }}"
-          Write-Host "==============================="
-          Write-Host "IP Address: $env:TS_IP"
+          Write-Host "================================="
+          Write-Host "        RDP INSTANCE ${{ matrix.id }}"
+          Write-Host "================================="
+          Write-Host "Tailscale IP: $env:TS_IP"
           Write-Host "Username: RDP"
           Write-Host "Password: m}O57Y80DJ)gs>e+"
-          Write-Host "==============================="
+          Write-Host "================================="
 
       - name: Keep Alive
         run: |
           while ($true) {
-            Write-Host "[KEEP ALIVE] RDP ${{ matrix.id }} Active"
+            Write-Host "RDP ${{ matrix.id }} Active..."
             Start-Sleep 300
           }
