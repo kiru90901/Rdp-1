@@ -1,95 +1,78 @@
-name: RDP x20 (100% Working - Dec 2025)
+name: RDP-20x
 
 on:
   workflow_dispatch:
 
 jobs:
-  rdp:
-    name: RDP-${{ matrix.id }}
+  rdp-setup:
     runs-on: windows-latest
-    timeout-minutes: 3600
     strategy:
       matrix:
-        id: [01, 02, 03, 04, 05, 06, 07, 08, 09, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20]
+        id: [1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20]
       max-parallel: 20
-      fail-fast: false
-
-    env:
-      USERNAME: RDP
-      PASSWORD: "m}O57Y80DJ)gs>e+"
+    timeout-minutes: 3600
 
     steps:
-      - name: Setup RDP + Firewall
-        run: |
-          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0 -Force
-          Set-ItemProperty -Path 'HKLM:\System\CurrentControl\Terminal Server\WinStations\RDP-Tcp' -Name "UserAuthentication" -Value 0 -Force
-          netsh advfirewall firewall delete rule name="RDP" 2>$null
-          netsh advfirewall firewall add rule name="RDP" dir=in action=allow protocol=TCP localport=3389
-          Restart-Service TermService -Force
 
-      - name: Create RDP User (Fixed)
+      - name: Enable RDP
         run: |
-          $user = "$env:USERNAME"
-          $pass = ConvertTo-SecureString "$env:PASSWORD" -AsPlainText -Force
-          if (Get-LocalUser -Name $user -ErrorAction SilentlyContinue) { Remove-LocalUser -Name $user }
-          New-LocalUser -Name $user -Password $pass -AccountNeverExpires -PasswordNeverExpires
-          Add-LocalGroupMember -Group "Administrators" -Member $user
-          Add-LocalGroupMember -Group "Remote Desktop Users" -Member $user
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' `
+            -Name "fDenyTSConnections" -Value 0 -Force
 
-      - name: Download Tailscale (With Retry)
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
+            -Name "UserAuthentication" -Value 0 -Force
+
+          netsh advfirewall firewall delete rule name="RDP-Allow"
+          netsh advfirewall firewall add rule name="RDP-Allow" dir=in action=allow protocol=TCP localport=3389
+
+          Restart-Service -Name TermService -Force
+
+      - name: Create RDP User (Same Username & Password)
         run: |
-          $url = "https://pkgs.tailscale.com/stable/tailscale-setup-1.82.0-amd64.msi"
-          $path = "$env:TEMP\tailscale.msi"
-          for ($i = 1; $i -le 5; $i++) {
-            try {
-              Invoke-WebRequest -Uri $url -OutFile $path -TimeoutSec 60 -ErrorAction Stop
-              break
-            } catch {
-              Write-Host "Download attempt $i failed, retrying..."
-              Start-Sleep -Seconds 10
-            }
+          $password = "m}O57Y80DJ)gs>e+"
+          $secure = ConvertTo-SecureString $password -AsPlainText -Force
+          
+          if (-not (Get-LocalUser -Name "RDP" -ErrorAction SilentlyContinue)) {
+            New-LocalUser -Name "RDP" -Password $secure -AccountNeverExpires
+            Add-LocalGroupMember -Group "Administrators" -Member "RDP"
+            Add-LocalGroupMember -Group "Remote Desktop Users" -Member "RDP"
           }
 
       - name: Install Tailscale
         run: |
-          msiexec.exe /i "$env:TEMP\tailscale.msi" /quiet /norestart | Wait-Process
+          $tsUrl = "https://pkgs.tailscale.com/stable/tailscale-setup-1.82.0-amd64.msi"
+          $installer = "$env:TEMP\ts.msi"
 
-      - name: Connect to Tailscale (Zero Parsing Error)
-        shell: pwsh
+          Invoke-WebRequest $tsUrl -OutFile $installer
+          Start-Process msiexec.exe -ArgumentList "/i `"$installer`" /quiet /norestart" -Wait
+
+      - name: Connect Tailscale
         run: |
-          # यहाँ सारी GitHub expressions को पहले capture कर रहे हैं – कोई parsing error नहीं आएगा
-          \( instance = " \){{ matrix.id }}"
-          \( runId = " \){{ github.run_id }}"
-          $hostname = "rdp-$instance-$runId"
-
           & "C:\Program Files\Tailscale\tailscale.exe" up `
             --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} `
-            --hostname=$hostname `
-            --accept-risk=all
+            --hostname=gh-rdp-${{ matrix.id }}
 
-          # Get Tailscale IP with retry
-          $ip = $null
-          for ($i = 0; $i -lt 30; $i++) {
-            $ip = & "C:\Program Files\Tailscale\tailscale.exe" ip -4 2>$null | Where-Object { $_ -match '\.' } | Select-Object -First 1
-            if ($ip) { break }
-            Start-Sleep -Seconds 5
+          $tsIP = ""
+          while ($tsIP -eq "") {
+            $tsIP = (& "C:\Program Files\Tailscale\tailscale.exe" ip -4)
+            Start-Sleep 3
           }
 
-          if (-not $ip) { exit 1 }
+          echo "TS_IP=$tsIP" >> $env:GITHUB_ENV
 
-          Write-Host "TAILSCALE_IP=$ip" >> $env:GITHUB_ENV
-          Write-Host "RDP-${{ matrix.id }} → $ip"
-
-      - name: RDP Ready - Keep Alive
+      - name: Show RDP Info
         run: |
-          Write-Host "========================================"
-          Write-Host "RDP-${{ matrix.id }} IS READY"
-          Write-Host "IP       : $env:TAILSCALE_IP"
-          Write-Host "Username : $env:USERNAME"
-          Write-Host "Password : $env:PASSWORD"
-          Write-Host "========================================"
+          Write-Host "==============================="
+          Write-Host "      RDP INSTANCE ${{ matrix.id }}"
+          Write-Host "==============================="
+          Write-Host "IP Address: $env:TS_IP"
+          Write-Host "Username: RDP"
+          Write-Host "Password: m}O57Y80DJ)gs>e+"
+          Write-Host "==============================="
 
+      - name: Keep Alive
+        run: |
           while ($true) {
-            Write-Host "[\( (Get-Date -f HH:mm:ss)] RDP- \){{ matrix.id }} alive → $env:TAILSCALE_IP"
-            Start-Sleep -Seconds 300
+            Write-Host "[KEEP ALIVE] RDP ${{ matrix.id }} Active"
+            Start-Sleep 300
           }
