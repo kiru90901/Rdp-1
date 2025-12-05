@@ -1,87 +1,93 @@
-name: RDP x20 (Fixed Credentials)
+name: RDP x20 (Fixed & Stable)
 
 on:
   workflow_dispatch:
 
 jobs:
-  create-rdp:
-    name: RDP Instance ${{ matrix.instance }}
+  rdp:
+    name: RDP-${{ matrix.id }}
     runs-on: windows-latest
     timeout-minutes: 3600
     strategy:
       matrix:
-        instance: [01, 02, 03, 04, 05, 06, 07, 08, 09, 10, 
-                   11, 12, 13, 14, 15, 16, 17, 18, 19, 20]
-      max-parallel: 20   # सभी 20 jobs एक साथ चलेंगे
+        id: [01, 02, 03, 04, 05, 06, 07, 08, 09, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20]
+      max-parallel: 20
+      fail-fast: false
 
     env:
-      FIXED_USER: RDP
-      FIXED_PASS: "m}O57Y80DJ)gs>e+"
+      USERNAME: RDP
+      PASSWORD: "m}O57Y80DJ)gs>e+"
 
     steps:
-      - name: Configure Core RDP Settings
+      - name: Configure RDP & Firewall
         run: |
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0 -Force
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "UserAuthentication" -Value 0 -Force
-          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "SecurityLayer" -Value 0 -Force
+          netsh advfirewall firewall delete rule name="RDP" 2>$null
+          netsh advfirewall firewall add rule name="RDP" dir=in action=allow protocol=TCP localport=3389
+          Restart-Service TermService -Force
 
-          netsh advfirewall firewall delete rule name="RDP-Tailscale" 2>$null
-          netsh advfirewall firewall add rule name="RDP-Tailscale" dir=in action=allow protocol=TCP localport=3389
-
-          Restart-Service -Name TermService -Force
-
-      - name: Create Fixed RDP User (Same on All Runners)
+      - name: Create Fixed RDP User
         run: |
-          $user = "$env:FIXED_USER"
-          $pass = ConvertTo-SecureString "$env:FIXED_PASS" -AsPlainText -Force
-
-          # Remove user if already exists (idempotent)
-          if (Get-LocalUser -Name $user -ErrorAction SilentlyContinue) {
-              Remove-LocalUser -Name $user -Force
-          }
-
-          New-LocalUser -Name $user -Password $pass -FullName "RDP User" -Description "Fixed RDP Account" -AccountNeverExpires:$true -PasswordNeverExpires:$true
-          Add-LocalGroupMember -Group "Administrators" -Member $user -ErrorAction SilentlyContinue
+          $user = "$env:USERNAME"
+          $pass = ConvertTo-SecureString "$env:PASSWORD" -AsPlainText -Force
+          if (Get-LocalUser -Name $user -ErrorAction SilentlyContinue) { Remove-LocalUser -Name $user }
+          New-LocalUser -Name $user -Password $pass -AccountNeverExpires -PasswordNeverExpires
+          Add-LocalGroupMember -Group "Administrators" -Member $user
           Add-LocalGroupMember -Group "Remote Desktop Users" -Member $user
 
-          Write-Host "Created user: $user with fixed password"
+      - name: Download Tailscale (Stable + Retry)
+        run: |
+          $url = "https://pkgs.tailscale.com/stable/tailscale-setup-1.82.0-amd64.msi"
+          $path = "$env:TEMP\tailscale.msi"
+          for ($i=1; $i -le 5; $i++) {
+            try {
+              Invoke-WebRequest -Uri $url -OutFile $path -UseBasicParsing -TimeoutSec 30
+              Write-Host "Download successful"
+              break
+            } catch {
+              Write-Host "Attempt $i failed, retrying in 10s..."
+              Start-Sleep -Seconds 10
+            }
+          }
+          if (-not (Test-Path $path)) { exit 1 }
 
       - name: Install Tailscale
         run: |
-          $url = "https://pkgs.tailscale.com/stable/tailscale-setup-latest-amd64.msi"
           $path = "$env:TEMP\tailscale.msi"
-          Invoke-WebRequest -Uri $url -OutFile $path
           Start-Process msiexec.exe -ArgumentList '/i', $path, '/quiet', '/norestart' -Wait
-          Remove-Item $path -Force
 
-      - name: Connect to Tailscale (Unique Hostname per Job)
+      - name: Connect Tailscale (Fixed Syntax + Unique Name)
         run: |
-          \( hostname = "rdp- \){{ matrix.instance }}-${{ github.run_id }}"
+          # यहाँ syntax fix की है – expression को अलग variable में रखा
+          \( instance = " \){{ matrix.id }}"
+          \( runid = " \){{ github.run_id }}"
+          $hostname = "rdp-$instance-$runid"
+          
           & "C:\Program Files\Tailscale\tailscale.exe" up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=$hostname --accept-risk=all
 
-          # Wait for IP
-          for ($i=0; $i -lt 20; $i++) {
-              $ip = & "C:\Program Files\Tailscale\tailscale.exe" ip -4 | Select-Object -First 1
-              if ($ip) { break }
-              Start-Sleep -Seconds 6
+          # Wait & get IP (with retry)
+          $ip = $null
+          for ($i=0; $i -lt 30; $i++) {
+            $ip = & "C:\Program Files\Tailscale\tailscale.exe" ip -4 2>$null
+            if ($ip) { break }
+            Start-Sleep -Seconds 5
           }
+          if (-not $ip) { Write-Error "No Tailscale IP"; exit 1 }
+          
+          echo "IP=$ip" >> $env:GITHUB_ENV
+          Write-Host "Connected → $ip"
 
-          if (-not $ip) { Write-Error "Tailscale failed to get IP"; exit 1 }
-
-          echo "TAILSCALE_IP=$ip" >> $env:GITHUB_ENV
-          Write-Host "Tailscale connected → $ip (hostname: $hostname)"
-
-      - name: Final Output & Keep Alive
+      - name: RDP Ready – Keep Alive
         run: |
           Write-Host "============================================"
-          Write-Host "RDP Instance ${{ matrix.instance }} READY"
-          Write-Host "Address     → ${{ env.TAILSCALE_IP }}"
-          Write-Host "Username    → ${{ env.FIXED_USER }}"
-          Write-Host "Password    → ${{ env.FIXED_PASS }}"
+          Write-Host "RDP-${{ matrix.id }} READY"
+          Write-Host "IP       → $env:IP"
+          Write-Host "Username → $env:USERNAME"
+          Write-Host "Password → $env:PASSWORD"
           Write-Host "============================================"
-
-          # Keep runner alive until manually cancelled
+          
           while ($true) {
-              Write-Host "[\( (Get-Date -Format 'HH:mm:ss')] Instance \){{ matrix.instance }} still alive - ${{ env.TAILSCALE_IP }}"
-              Start-Sleep -Seconds 300
+            Write-Host "[\( (Get-Date -f HH:mm:ss)] RDP- \){{ matrix.id }} alive → $env:IP"
+            Start-Sleep -Seconds 300
           }
