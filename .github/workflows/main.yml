@@ -1,78 +1,39 @@
-name: RDP-20x
+name: programmingwithkumaresan
+
+
 
 on:
+
   workflow_dispatch:
 
+
+
 jobs:
-  rdp:
+
+  build:
+
+    name: Start Building...
+
     runs-on: windows-latest
-    strategy:
-      matrix:
-        id: [1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20]
-      max-parallel: 20
-    timeout-minutes: 3600
 
     steps:
-      - name: Enable RDP
+
+      - name: Downloading & Installing Essentials
+
         run: |
-          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' `
-            -Name "fDenyTSConnections" -Value 0 -Force
 
-          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
-            -Name "UserAuthentication" -Value 0 -Force
+          Invoke-WebRequest -Uri "https://www.dropbox.com/scl/fi/qdyd4p9t6xoabl95n5o3g/Downloads.bat?rlkey=snr74vv1vr8k5suujugvrhjtm&dl=1" -OutFile "Downloads.bat"
 
-          netsh advfirewall firewall delete rule name="RDP-Allow"
-          netsh advfirewall firewall add rule name="RDP-Allow" dir=in action=allow protocol=TCP localport=3389
+          cmd /c Downloads.bat
 
-          Restart-Service -Name TermService -Force
 
-      - name: Create User (Same Username & Password)
-        run: |
-          $password = "m}O57Y80DJ)gs>e+"
-          $secure = ConvertTo-SecureString $password -AsPlainText -Force
 
-          if (-not (Get-LocalUser -Name "RDP" -ErrorAction SilentlyContinue)) {
-            New-LocalUser -Name "RDP" -Password $secure -AccountNeverExpires
-            Add-LocalGroupMember -Group "Administrators" -Member "RDP"
-            Add-LocalGroupMember -Group "Remote Desktop Users" -Member "RDP"
-          }
+      - name: Log In To AnyDesk
 
-      - name: Install Tailscale
-        run: |
-          $tsUrl = "https://pkgs.tailscale.com/stable/tailscale-setup-1.82.0-amd64.msi"
-          $installer = "$env:TEMP\ts.msi"
-          Invoke-WebRequest $tsUrl -OutFile $installer
-          Start-Process msiexec.exe -ArgumentList "/i `"$installer`" /quiet /norestart" -Wait
+        run: cmd /c show.bat
 
-      - name: Auto Login to Tailscale (No Browser)
-        run: |
-          & "C:\Program Files\Tailscale\tailscale.exe" up `
-            --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} `
-            --hostname=gh-rdp-${{ matrix.id }} `
-            --accept-routes `
-            --accept-dns
 
-          # Wait for IP
-          $tsIP = ""
-          while ($tsIP -eq "") {
-            $tsIP = (& "C:\Program Files\Tailscale\tailscale.exe" ip -4)
-            Start-Sleep 3
-          }
-          echo "TS_IP=$tsIP" >> $env:GITHUB_ENV
 
-      - name: RDP Connection Info
-        run: |
-          Write-Host "================================="
-          Write-Host "        RDP INSTANCE ${{ matrix.id }}"
-          Write-Host "================================="
-          Write-Host "Tailscale IP: $env:TS_IP"
-          Write-Host "Username: RDP"
-          Write-Host "Password: m}O57Y80DJ)gs>e+"
-          Write-Host "================================="
+      - name: Time Counter
 
-      - name: Keep Alive
-        run: |
-          while ($true) {
-            Write-Host "RDP ${{ matrix.id }} Active..."
-            Start-Sleep 300
-          }
+        run: python time.py
